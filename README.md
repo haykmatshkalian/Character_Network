@@ -29,7 +29,6 @@ Once processed, the system produces a **co-occurrence network graph** where:
 - **Nodes** = characters
 - **Node size** = importance (based on frequency)
 - **Edges** = relationships (based on shared paragraphs)
-- *(Optional)* Edge color = sentiment (friendly = bright, hostile = dark)
 
 ---
 
