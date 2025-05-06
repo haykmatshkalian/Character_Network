@@ -23,7 +23,7 @@ The relationships among characters are often the heart of any compelling novel. 
 
 ---
 
-## 📊 Output Example
+## Output Example
 
 Once processed, the system produces a **co-occurrence network graph** where:
 
@@ -34,29 +34,29 @@ Once processed, the system produces a **co-occurrence network graph** where:
 
 ---
 
-## 🧠 Core Techniques
+## Core Techniques
 
-### 1. 🧾 Name Entity Recognition (NER)
+### 1. Name Entity Recognition (NER)
 Identifies all capitalized or contextually probable names in Armenian text. Afterward, GPT filters the list to remove non-character terms like places or generic nouns.
 
-### 2. 🤖 GPT Filtering
+### 2. GPT Filtering
 Instead of manually maintaining a list of valid characters, GPT-4 is used to **refine the extracted names**, keeping only character names. This is especially helpful in texts where names aren't standard.
 
-### 3. 📈 Co-occurrence Analysis
+### 3. Co-occurrence Analysis
 Characters appearing in the same paragraph are considered connected. The number of co-appearances is used to determine the edge strength.
 
-### 4. 💬 (Optional) Sentiment Analysis
+### 4. (Optional) Sentiment Analysis
 Analyzes tone and context to estimate sentiment between characters. Friendly relationships are rendered in bright colors, while hostile ones appear darker.
 
-### 5. 📐 Network Graph Visualization
+### 5. Network Graph Visualization
 Constructed with `networkx` and rendered via `matplotlib`. Armenian font (`NotoSansArmenian`) ensures correct label rendering.
 
-### 6. ⚙️ PySpark (Optional)
+### 6. PySpark (Optional)
 If processing massive novels or multiple books, Spark can be integrated for distributed computation of name recognition and sentiment scoring.
 
 ---
 
-## 🚀 Getting Started
+## Getting Started
 
 ### 1. Clone the Repository
 
