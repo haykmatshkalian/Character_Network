@@ -16,7 +16,7 @@ The relationships among characters are often the heart of any compelling novel. 
 
 - ✅ Extract Armenian text directly from any PDF novel
 - ✅ Detect potential names using basic heuristics
-- ✅ **Filter actual character names** using GPT (via OpenRouter)
+- ✅ **Filter actual character names** using AI (via OpenRouter)
 - ✅ Count co-occurrences based on paragraph proximity
 - ✅ Visualize character networks with `networkx`
 - ✅ (Optional) Apply sentiment analysis to edges (e.g., friendly vs. hostile)
