@@ -34,7 +34,7 @@ with open('armenian_text.txt', 'r', encoding='utf-8') as f:
 # ========== STEP 3: OpenRouter API setup ==========
 
 client = OpenAI(
-    api_key="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",  # Replace with your actual OpenAI API key
+    api_key="YOUR_API_KEY",  # Replace with your actual OpenAI API key
     base_url="https://openrouter.ai/api/v1"
 )
 
