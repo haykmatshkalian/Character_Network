@@ -1,163 +1,187 @@
 import fitz  # PyMuPDF
-import networkx as nx
-import matplotlib.pyplot as plt
-import itertools
-import ast
-from openai import OpenAI
-import matplotlib.font_manager as fm
 import os
 import re
-from wordcloud import WordCloud
+import torch
+import itertools
+import networkx as nx
+import matplotlib.pyplot as plt
+import openai
+import httpx
+import json
+from transformers import AutoTokenizer, AutoModelForTokenClassification, pipeline
+from matplotlib import font_manager, rcParams
+
+# ========== CONFIGURATION ==========
+PDF_PATH = "sample.pdf"
+TXT_PATH = "armenian_text.txt"
+FONT_PATH = "NotoSansArmenian-Regular.ttf"
+CHUNK_SIZE = 3000
+OVERLAP = 500
 
 # ========== STEP 1: Extract text from PDF ==========
-
 def extract_text_from_pdf(pdf_path):
-    text = ""
+    cleaned_paragraphs = []
     with fitz.open(pdf_path) as doc:
         for page in doc:
-            text += page.get_text()
-    return text
+            raw_text = page.get_text("text")
+            paragraphs = re.split(r'\n{2,}', raw_text)
+            for para in paragraphs:
+                single_line = re.sub(r'\n+', ' ', para).strip()
+                if single_line:
+                    cleaned_paragraphs.append(single_line)
+    return "\n\n".join(cleaned_paragraphs)
 
-pdf_text = extract_text_from_pdf("sample.pdf")
-
-with open("armenian_text.txt", "w", encoding='utf-8') as f:
+pdf_text = extract_text_from_pdf(PDF_PATH)
+with open(TXT_PATH, "w", encoding='utf-8') as f:
     f.write(pdf_text)
 
-with open("armenian_text(simple connections).txt", "w", encoding='utf-8') as f:
-    f.write(pdf_text)
+# ========== STEP 2: Load NER Model ==========
+tokenizer = AutoTokenizer.from_pretrained("Davlan/bert-base-multilingual-cased-ner-hrl")
+model = AutoModelForTokenClassification.from_pretrained("Davlan/bert-base-multilingual-cased-ner-hrl")
+device = 0 if torch.cuda.is_available() else -1
+ner_pipeline = pipeline("ner", model=model, tokenizer=tokenizer, aggregation_strategy="simple", device=device)
 
-# ========== STEP 2: Load text ==========
+# ========== STEP 3: Extract raw NER names ==========
+def extract_ner_names(text):
+    chunks = []
+    i = 0
+    while i < len(text):
+        chunks.append(text[i:i + CHUNK_SIZE])
+        i += CHUNK_SIZE - OVERLAP
 
-with open('armenian_text.txt', 'r', encoding='utf-8') as f:
+    raw_names = []
+    for chunk in chunks:
+        raw_names.extend([
+            entity["word"]
+            for entity in ner_pipeline(chunk)
+            if entity["entity_group"] == "PER"
+        ])
+    return list(set(filter(None, raw_names)))
+
+# ========== STEP 4: Normalize names with OpenRouter ==========
+openai.api_key = "Youre-API-Key"
+openai.base_url = "https://openrouter.ai/api/v1"
+
+def normalize_names_with_openrouter(ner_names):
+    print("🔁 Normalizing names with OpenRouter...")
+
+    prompt = (
+        "You are an Armenian character name normalizer. "
+        "From the input list of named entities (some might be inflected, duplicated or partial), "
+        "extract and return a **unique list of canonical, full Armenian character names** in JSON array format. "
+        "Do NOT return nicknames or fragments like 'Ս', 'Սամս', 'Սամսոնի' — only the complete version like 'Սամսոն'.\n\n"
+        "Input:\n" + json.dumps(ner_names, ensure_ascii=False)
+    )
+
+    headers = {
+        "Authorization": f"Bearer {openai.api_key}",
+        "HTTP-Referer": "https://yourapp.com",
+        "X-Title": "CharacterGraphApp",
+        "Content-Type": "application/json"
+    }
+
+    data = {
+        "model": "gpt-3.5-turbo",
+        "messages": [
+            {"role": "system", "content": "You normalize Armenian character names for literary analysis."},
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.2
+    }
+
+    try:
+        response = httpx.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data)
+        response.raise_for_status()
+        result = response.json()
+        content = result['choices'][0]['message']['content']
+        print("OpenRouter Content:", content)
+
+        content = content.strip()
+        if content.startswith("```json"):
+            content = content[7:]
+        if content.startswith("```"):
+            content = content[3:]
+        if content.endswith("```"):
+            content = content[:-3]
+
+        normalized = json.loads(content)
+        if not isinstance(normalized, list):
+            print("❌ Normalization error: Response was not a list")
+            return []
+
+        print(f"✅ Final character names ({len(normalized)}): {normalized}")
+        return normalized
+
+    except Exception as e:
+        print(f"❌ Normalization error: {e}")
+        return []
+
+# ========== STEP 5: Build character graph ==========
+def build_character_graph(text, character_names):
+    paragraphs = text.split('\n\n')
+    connections = {}
+    frequencies = dict.fromkeys(character_names, 0)
+    char_set = set(character_names)
+
+    for para in paragraphs:
+        found = [name for name in character_names if name in para]
+        for name in found:
+            frequencies[name] += 1
+        for name1, name2 in itertools.combinations(found, 2):
+            if name1 != name2:
+                pair = tuple(sorted((name1, name2)))
+                connections[pair] = connections.get(pair, 0) + 1
+
+    G = nx.Graph()
+    for name in character_names:
+        G.add_node(name, size=frequencies[name] * 300)  # Node size factor
+
+    for (n1, n2), weight in connections.items():
+        G.add_edge(n1, n2, weight=weight)
+
+    return G
+
+# ========== STEP 6: Visualization ==========
+def visualize_graph(G, font_path):
+    if G.number_of_nodes() == 0:
+        print("⚠️ No characters to visualize.")
+        return
+
+    try:
+        font_prop = font_manager.FontProperties(fname=font_path)
+        rcParams['font.family'] = font_prop.get_name()
+    except Exception as e:
+        print(f"⚠️ Could not load font: {e}. Using default font.")
+        font_prop = None
+
+    node_sizes = [G.nodes[n]["size"] for n in G.nodes]
+    edge_weights = [G[u][v]['weight'] for u, v in G.edges]
+
+    plt.figure(figsize=(12, 10))
+    pos = nx.circular_layout(G)
+    nx.draw(G, pos, with_labels=False, node_size=node_sizes, node_color='skyblue',
+            edge_color='gray', width=edge_weights, alpha=0.7)
+
+    if font_prop:
+        nx.draw_networkx_labels(G, pos, font_size=12, font_family=font_prop.get_name())
+    else:
+        nx.draw_networkx_labels(G, pos, font_size=12)
+
+    plt.title("Character Co-occurrence Graph", fontsize=16)
+    plt.tight_layout()
+    plt.show()
+
+# ========== STEP 7: Run ==========
+with open(TXT_PATH, 'r', encoding='utf-8') as f:
     text = f.read()
 
-# ========== STEP 3: OpenRouter API setup ==========
+print("Device set to use", "cuda" if torch.cuda.is_available() else "cpu")
 
-client = OpenAI(
-    api_key="YOUR_API_KEY",  # Replace with your actual OpenAI API key
-    base_url="https://openrouter.ai/api/v1"
-)
+raw_ner_names = extract_ner_names(text)
+print(f"NER names ({len(raw_ner_names)}):", raw_ner_names)
 
-# ========== STEP 4: Utility functions ==========
+character_names = normalize_names_with_openrouter(raw_ner_names)
+print(f"Final character names ({len(character_names)}):", character_names)
 
-def is_valid_armenian_name(word):
-    return (
-        len(word) > 1 and
-        all('Ա' <= c <= 'ֆ' or c in "և" for c in word) and
-        not any(char.isdigit() or 'a' <= char.lower() <= 'z' for char in word)
-    )
-
-def normalize_name(name):
-    suffixes = ['ի', 'ին', 'իս', 'ով', 'ովա', 'ոյին', 'ս', 'ովան', 'ոն']
-    for suffix in sorted(suffixes, key=len, reverse=True):
-        if name.endswith(suffix) and len(name) - len(suffix) >= 2:
-            return name[:-len(suffix)]
-    return name
-
-def extract_characters_from_text(text):
-    all_names = set()
-    chunk_size = 3000
-    chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
-
-    for chunk in chunks:
-        print(f"Processing chunk:\n{chunk[:200]}")  # Log chunk content
-
-        prompt = f"""
-        Տես այս հայկական տեքստը և վերադարձիր միայն **մարդկային կերպարների անունների Python list**, առանց բացատրության և առանց ուրիշ բովանդակության։
-        Օրինակ վերադարձի ձևը պետք է լինի այսպես՝ ["Արամ", "Լիլո", "Հովհաննես"]
-        Խնդրում եմ միայն անուններ։
-
-        Տեքստը՝
-        {chunk}
-        """
-        try:
-            response = client.chat.completions.create(
-                model="openai/gpt-3.5-turbo",
-                messages=[{"role": "system", "content": "Արա այնպես, որ վերադարձնի միայն կերպարների անուններ Python list-ի տեսքով։ Կարևոր է՝ անունը սկսվում է մեծատառով և հայկական անուն է։"},
-                          {"role": "user", "content": prompt}]
-            )
-
-            response_text = response.choices[0].message.content.strip()
-            print(f"API response for chunk:\n{response_text}")  # Log API response
-
-            if not response_text or not response_text.startswith("[") or not response_text.endswith("]"):
-                print("⚠️ Empty or invalid response from API for chunk.")
-                continue
-
-            names = ast.literal_eval(response_text)
-            if isinstance(names, list):
-                valid_names = [
-                    normalize_name(name.strip()) for name in names if is_valid_armenian_name(name.strip())
-                ]
-                all_names.update(valid_names)
-            else:
-                print("⚠️ Response was not a list:", response_text)
-
-        except Exception as e:
-            print(f"❌ Failed to parse names from chunk:\n{chunk[:200]} ...\nError: {e}")
-
-    return list(all_names)
-
-# ========== STEP 5: Extract characters ==========
-
-character_names = extract_characters_from_text(text)
-print("Characters extracted:", character_names)
-
-# ========== STEP 6: Build co-occurrence network ==========
-
-paragraphs = text.split('\n\n')
-connections = {}
-for para in paragraphs:
-    found = [name for name in character_names if re.search(r'\b' + re.escape(name) + r'\w*\b', para)]
-    for name1, name2 in itertools.combinations(found, 2):
-        pair = tuple(sorted((name1, name2)))
-        connections[pair] = connections.get(pair, 0) + 1
-
-# ========== STEP 7: Build graph ==========
-
-G = nx.Graph()
-G.add_nodes_from(character_names)
-for (name1, name2), weight in connections.items():
-    G.add_edge(name1, name2, weight=weight)
-
-# ========== STEP 8: Visualize ==========
-
-pos = nx.spring_layout(G, seed=42, k=2.5)
-edges = G.edges()
-weights = [G[u][v]['weight'] for u, v in edges]
-
-plt.figure(figsize=(14, 10))
-nx.draw_networkx_nodes(G, pos, node_color='lightblue', edgecolors='black', node_size=2000)
-nx.draw_networkx_edges(G, pos, edgelist=edges, width=[w * 0.5 for w in weights], alpha=0.6)
-
-font_path = "NotoSansArmenian-Regular.ttf"
-font_prop = fm.FontProperties(fname=font_path)
-
-for node, (x, y) in pos.items():
-    plt.text(
-        x, y,
-        node,
-        fontsize=12,
-        fontproperties=font_prop,
-        horizontalalignment='center',
-        verticalalignment='center',
-        bbox=dict(facecolor='none', edgecolor='none', boxstyle='round,pad=0.2')
-    )
-
-plt.title('Character Network', fontsize=16, fontproperties=font_prop)
-plt.axis('off')
-plt.tight_layout()
-plt.show()
-
-# ========== STEP 9: Generate word cloud ==========
-
-if character_names:
-    name_counts = {name: character_names.count(name) for name in set(character_names)}
-    wordcloud = WordCloud(font_path=font_path, width=800, height=600).generate_from_frequencies(name_counts)
-
-    plt.figure(figsize=(10, 8))
-    plt.imshow(wordcloud, interpolation="bilinear")
-    plt.axis("off")
-    plt.show()
-else:
-    print("No valid character names found. Word cloud cannot be generated.")
+graph = build_character_graph(text, character_names)
+visualize_graph(graph, FONT_PATH)
